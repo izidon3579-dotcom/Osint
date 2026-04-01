@@ -1,0 +1,98 @@
+bot.ру
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+
+import sqlite3
+from datetime import datetime
+import subprocess
+import os
+
+TOKEN = os.getenv("TOKEN")
+
+# --- база ---
+conn = sqlite3.connect("osint.db", check_same_thread=False)
+cursor = conn.cursor()
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    username TEXT,
+    date TEXT
+)
+""")
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    query TEXT,
+    date TEXT
+)
+""")
+
+conn.commit()
+
+# --- меню ---
+def menu():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔎 Sherlock Search", callback_data="search")]
+    ])
+
+# --- старт ---
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.message.from_user
+
+    cursor.execute(
+        "INSERT INTO users (user_id, username, date) VALUES (?, ?, ?)",
+        (user.id, user.username, str(datetime.now()))
+    )
+    conn.commit()
+
+    await update.message.reply_text("💀 OSINT BOT (Sherlock)", reply_markup=menu())
+
+# --- кнопки ---
+async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    context.user_data["mode"] = "search"
+    await query.message.reply_text("Введи username:")
+
+# --- запуск Sherlock ---
+def run_sherlock(username):
+    try:
+        result = subprocess.check_output(
+            f"python -m sherlock {username}",
+            shell=True,
+            text=True
+        )
+        return result[:3500]
+    except Exception as e:
+        return str(e)
+
+# --- обработка ---
+async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    user = update.message.from_user
+
+    cursor.execute(
+        "INSERT INTO logs (user_id, query, date) VALUES (?, ?, ?)",
+        (user.id, text, str(datetime.now()))
+    )
+    conn.commit()
+
+    await update.message.reply_text("🔎 Ищу через Sherlock...")
+
+    result = run_sherlock(text)
+
+    await update.message.reply_text(f"Результат:\n\n{result}")
+
+# --- запуск ---
+app = ApplicationBuilder().token(TOKEN).build()
+
+app.add_handler(CommandHandler("start", start))
+app.add_handler(CallbackQueryHandler(button))
+app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
+
+app.run_polling()
